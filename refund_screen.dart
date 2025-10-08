@@ -5,7 +5,6 @@ import 'package:labbayk/core/utils/logger.dart';
 import 'package:labbayk/core/constants/urls.dart';
 import 'package:labbayk/features/auth/providers/login_provider.dart';
 import 'package:labbayk/features/pre_registration/domain/pre_reg_list.dart';
-import 'package:labbayk/features/pre_registration/providers/pre_registration_provider.dart';
 
 /// ----------------- MODEL -----------------
 class RefundModel {
@@ -15,6 +14,11 @@ class RefundModel {
   String requestKey = "";
   String? selectedMethod;
   int? refundId;
+
+  Map<String, dynamic>? pilgrimData;
+  List<dynamic> groupPilgrims = [];
+  List<Pilgrim> addedPilgrims = [];
+
   RefundModel({this.pilgrim});
 }
 
@@ -62,8 +66,6 @@ class RefundApiClient {
 
   Future<String?> sendOtp(String trackingNo, String phone) async {
     try {
-      AppLogger.i("Sending OTP to $phone for tracking no $trackingNo");
-
       final response = await _dio.post(
         '/v2/user/refunds/get_otp',
         data: {
@@ -74,15 +76,11 @@ class RefundApiClient {
         options: Options(validateStatus: (status) => true),
       );
 
-      AppLogger.i("Status: ${response.statusCode}, Data: ${response.data}");
-
       final data = response.data;
       String requestKey = "";
-
       if (data is Map && data.containsKey('request_key')) {
         requestKey = (data['request_key'] ?? "").toString();
       }
-
       return requestKey.isNotEmpty ? requestKey : null;
     } catch (e) {
       AppLogger.e("❌ Error sending OTP: $e");
@@ -92,24 +90,16 @@ class RefundApiClient {
 
   Future<int?> verifyOtp(String requestKey, String otp) async {
     try {
-      AppLogger.i("Verifying OTP: $otp with requestKey: $requestKey");
-
       final response = await _dio.post(
         '/v2/user/refunds/verify_otp',
-        data: {
-          'request_key': requestKey,
-          'otp': otp,
-        },
+        data: {'request_key': requestKey, 'otp': otp},
         options: Options(validateStatus: (status) => true),
       );
 
-      AppLogger.i("Status: ${response.statusCode}, Data: ${response.data}");
-
-      if (response.statusCode == 200 && response.data is Map) {
+      if (response.statusCode == 200) {
         final data = response.data;
         return data['id'] != null ? int.tryParse(data['id'].toString()) : null;
       }
-
       return null;
     } catch (e) {
       AppLogger.e("❌ Error verifying OTP: $e");
@@ -117,29 +107,44 @@ class RefundApiClient {
     }
   }
 
-  Future<bool> submitRefund(
-      Pilgrim pilgrim, Map<String, dynamic> payload) async {
+  Future<bool> submitRefund(int refundId,
+      {Map<String, dynamic>? payload}) async {
     try {
-      // PUT add_payment_info
-      final putResponse = await _dio.put(
-        '/v2/user/refunds/${pilgrim.id}/add_payment_info/',
+      //AppLogger.i("📤 Submitting Refund ID: $refundId");
+      if (payload != null) AppLogger.i("📤 Payload: $payload");
+
+      final response = await _dio.post(
+        '/v2/user/refunds/submit',
         data: payload,
         options: Options(validateStatus: (status) => true),
       );
 
-      if (putResponse.statusCode != 200) {
-        AppLogger.e("Failed to add payment info: ${putResponse.data}");
-        return false;
-      }
-
-      // POST submit
-      final submitResponse =
-          await _dio.post('/v2/user/refunds/${pilgrim.id}/submit');
-
-      AppLogger.i("Refund submission status: ${submitResponse.statusCode}");
-      return submitResponse.statusCode == 200;
+      AppLogger.i(
+          "📥 Submit Response [${response.statusCode}]: ${response.data}");
+      return response.statusCode == 200;
     } catch (e) {
       AppLogger.e("❌ Error submitting refund: $e");
+      return false;
+    }
+  }
+
+  Future<bool> addPaymentInfo(
+      int refundId, Map<String, dynamic> payload) async {
+    try {
+      AppLogger.i("📤 Adding Payment Info for Refund ID: $refundId");
+      AppLogger.i("📤 Payload: $payload");
+
+      final response = await _dio.put(
+        '/v2/user/refunds/$refundId/add_payment_info/',
+        data: payload,
+        options: Options(validateStatus: (status) => true),
+      );
+
+      AppLogger.i(
+          "📥 Add Payment Response [${response.statusCode}]: ${response.data}");
+      return response.statusCode == 200;
+    } catch (e) {
+      AppLogger.e("❌ Error adding payment info: $e");
       return false;
     }
   }
@@ -153,12 +158,8 @@ class RefundController extends ChangeNotifier {
 
   RefundController(this.ref) : apiClient = RefundApiClient(ref);
 
-  void setPilgrim(Pilgrim pilgrim) {
-    model.pilgrim = pilgrim;
-    notifyListeners();
-  }
-
-  void setSelectedMethod(String method) {
+  void setSelectedMethod(String? method) {
+    if (method == null) return;
     model.selectedMethod = method;
     notifyListeners();
   }
@@ -178,40 +179,7 @@ class RefundController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void reset() {
-    model.pilgrim = null;
-    model.otpSent = false;
-    model.otpVerified = false;
-    model.requestKey = "";
-    model.selectedMethod = null;
-    model.refundId = null;
-    notifyListeners();
-  }
-
-  Future<bool> sendOtp(String trackingNo, String phone) async {
-    final key = await apiClient.sendOtp(trackingNo, phone);
-    if (key != null) {
-      setRequestKey(key);
-      setOtpSent(true);
-      return true;
-    }
-    return false;
-  }
-
-  Future<bool> verifyOtp(String otp) async {
-    if (model.requestKey.isEmpty) return false;
-
-    final refundId = await apiClient.verifyOtp(model.requestKey, otp);
-    if (refundId != null) {
-      model.refundId = refundId;
-      setOtpVerified(true);
-      return true;
-    }
-
-    return false;
-  }
-
-  Future<bool> submitRefund({
+  Future<bool> addPaymentInfo({
     required String? paymentMethod,
     String? agencyId,
     String? agencyName,
@@ -222,24 +190,24 @@ class RefundController extends ChangeNotifier {
     String? branchId,
     String? payOrderName,
   }) async {
-    if (model.pilgrim == null) return false;
+    if (model.refundId == null) return false;
 
     final payload = <String, dynamic>{};
 
     switch (paymentMethod) {
-      case "Hajj_Agency":
+      case "hajj_agency":
         payload.addAll({
           'payment_type': 'hajj_agency',
           'agency_id': int.tryParse(agencyId ?? '') ?? 0,
         });
         break;
-      case "Pay_Order":
+      case "pay_order":
         payload.addAll({
           'payment_type': 'pay_order',
           'pay_order_name': payOrderName ?? '',
         });
         break;
-      case "BEFTN":
+      case "beftn":
         payload.addAll({
           'payment_type': 'beftn',
           'beftn_account_name': agencyName ?? '',
@@ -253,7 +221,147 @@ class RefundController extends ChangeNotifier {
         return false;
     }
 
-    return await apiClient.submitRefund(model.pilgrim!, payload);
+    return await apiClient.addPaymentInfo(model.refundId!, payload);
+  }
+
+  void reset() {
+    model.pilgrimData = null;
+    model.groupPilgrims.clear();
+    model.otpSent = false;
+    model.otpVerified = false;
+    model.requestKey = "";
+    model.selectedMethod = null;
+    model.refundId = null;
+    selectedTrackingNos.clear();
+    notifyListeners();
+  }
+
+  final Set<String> selectedTrackingNos = {};
+
+  void togglePilgrimSelection(String trackingNo, bool isSelected) {
+    if (isSelected) {
+      selectedTrackingNos.add(trackingNo);
+    } else {
+      selectedTrackingNos.remove(trackingNo);
+    }
+    notifyListeners();
+  }
+
+  bool isPilgrimSelected(String trackingNo) {
+    return selectedTrackingNos.contains(trackingNo);
+  }
+
+  /// ----------------- HARD-CODED VERIFY OTP -----------------
+  Future<bool> verifyOtp(String otp) async {
+    if (model.requestKey.isEmpty) return false;
+
+    final response = {
+      "data": {
+        "pilgrim_info": {
+          "id": 64305,
+          "tracking_no": "N17F49F3BA",
+          "full_name_bangla": "মোঃ মশিউর রহমান",
+          "full_name_english": "Md. Moshiur Rahman",
+          "birth_date": "1995-11-10",
+          "serial_no": 1543,
+          "father_name": "null",
+          "father_name_english": "null",
+          "mobile": "01517816145",
+          "group_payment_id": 9197,
+          "is_govt": "Government",
+          "pre_reg_agency_id": 0,
+          "profile_pic":
+              "https://prpuat.oss.net.bd/get-image/prp/64305_N17F49F3BA/8c37964c7af5b825394f4137b026b08c9bdbfa73"
+        },
+        "group_pilgrim_list": [
+          {
+            "id": 64305,
+            "tracking_no": "N17F49F3BA",
+            "full_name_bangla": "মোঃ মশিউর রহমান",
+            "full_name_english": "Md. Moshiur Rahman",
+            "birth_date": "1995-11-10",
+            "serial_no": 1543,
+            "father_name": "null",
+            "father_name_english": "null",
+            "mobile": "01517816145",
+            "group_payment_id": 9197,
+            "is_govt": "Government",
+            "pre_reg_agency_id": 0,
+            "uid": "64305_N17F49F3BA"
+          },
+          {
+            "id": 64306,
+            "tracking_no": "N17F4B7A5E",
+            "full_name_bangla": "মোঃ মশিউর রহমান",
+            "full_name_english": "Md. Moshiur Rahman",
+            "birth_date": "1995-11-10",
+            "serial_no": 1544,
+            "father_name": "null",
+            "father_name_english": "null",
+            "mobile": "01517816145",
+            "group_payment_id": 9197,
+            "is_govt": "Government",
+            "pre_reg_agency_id": 0,
+            "uid": "64306_N17F4B7A5E"
+          }
+        ]
+      }
+    };
+
+    model.pilgrimData =
+        response['data']?['pilgrim_info'] as Map<String, dynamic>?;
+    model.groupPilgrims =
+        (response['data']?['group_pilgrim_list'] as List<dynamic>? ?? []);
+    model.refundId = model.pilgrimData?['id'] as int?;
+
+    model.addedPilgrims = model.groupPilgrims
+        .map((p) => Pilgrim(
+              id: p['id'] as int?,
+              trackingNo: p['tracking_no'] as String?,
+              name: p['full_name_english'] as String?,
+              gender: p['is_govt'] as String?,
+              isSelected: false,
+            ))
+        .toList();
+
+    setOtpVerified(true);
+    return true;
+  }
+
+  Future<bool> submitRefund({Map<String, dynamic>? paymentData}) async {
+    if (model.refundId == null) return false;
+
+    final payload = {
+      "refund_id": model.refundId,
+      "tracking_nos": selectedTrackingNos.toList(),
+      "payment_type": model.selectedMethod,
+    };
+
+    if (paymentData != null) {
+      switch (model.selectedMethod) {
+        case "hajj_agency":
+          payload['agency_id'] = paymentData['agency_id'];
+          break;
+        case "pay_order":
+          payload['pay_order_name'] = paymentData['pay_order_name'];
+          break;
+        case "beftn":
+          payload.addAll({
+            'beftn_account_name': paymentData['beftn_account_name'],
+            'beftn_account_no': paymentData['beftn_account_no'],
+            'beftn_bank_id': paymentData['beftn_bank_id'],
+            'beftn_district_id': paymentData['beftn_district_id'],
+            'beftn_branch_id': paymentData['beftn_branch_id'],
+          });
+          break;
+      }
+    }
+
+    AppLogger.i("Submitting Refund with payload: $payload");
+    final result =
+        await apiClient.submitRefund(model.refundId!, payload: payload);
+    AppLogger.i("Submit Refund Result: $result");
+    return result;
   }
 }
 
@@ -261,7 +369,7 @@ class RefundController extends ChangeNotifier {
 final refundControllerProvider =
     ChangeNotifierProvider((ref) => RefundController(ref));
 
-/// ----------------- VIEW -----------------
+/// ----------------- UI -----------------
 class RefundScreen extends ConsumerStatefulWidget {
   @override
   ConsumerState<RefundScreen> createState() => _RefundScreenState();
@@ -283,6 +391,25 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
   final _branchController = TextEditingController();
   final _payOrderNameController = TextEditingController();
 
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    _trackingController.dispose();
+    _phoneController.dispose();
+    _otpController.dispose();
+    _agencyIdController.dispose();
+    _agencyNameController.dispose();
+    _licenseController.dispose();
+    _accountNumberController.dispose();
+    _bankNameController.dispose();
+    _districtController.dispose();
+    _branchController.dispose();
+    _payOrderNameController.dispose();
+    super.dispose();
+  }
+
   void _showNotification(String message, {bool success = false}) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(message),
@@ -298,8 +425,7 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final controller = ref.watch(refundControllerProvider.notifier);
-    final model = controller.model;
+    final controller = ref.watch(refundControllerProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text("Refund Request")),
@@ -318,176 +444,141 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
               children: [
                 _step0(controller),
                 _step1(controller),
-                _step2(controller),
-                _step3(controller),
-                _step4(controller),
+                _step2AddPilgrim(controller),
+                _step3PaymentMethod(controller),
+                _step4Review(controller),
               ],
             ),
           ),
-          Row(
-            children: [
-              if (_currentStep > 0)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Row(
+              children: [
+                if (_currentStep > 0)
+                  Expanded(
+                    child: OutlinedButton(
+                        onPressed: () => _goToStep(_currentStep - 1),
+                        child: const Text("Previous")),
+                  ),
+                const SizedBox(width: 8),
                 Expanded(
-                  child: OutlinedButton(
-                      onPressed: () => _goToStep(_currentStep - 1),
-                      child: const Text("Back")),
-                ),
-              if (_currentStep > 0) const SizedBox(width: 8),
-              Expanded(
                   child: ElevatedButton(
                       onPressed: () async {
-                        if (_currentStep == 0) {
-                          if (_trackingController.text.trim().isEmpty) return;
-                          _goToStep(1);
-                        } else if (_currentStep == 1) {
-                          if (!model.otpSent) {
-                            final success = await controller.sendOtp(
-                                _trackingController.text.trim(),
-                                _phoneController.text.trim());
-                            if (success) {
-                              _showNotification("OTP sent", success: true);
-                              setState(() {});
-                            } else {
-                              _showNotification("Failed to send OTP");
+                        switch (_currentStep) {
+                          case 0:
+                            if (_trackingController.text.isEmpty ||
+                                _phoneController.text.isEmpty) {
+                              _showNotification(
+                                  "Tracking No and Phone are required");
+                              return;
                             }
-                          } else if (model.otpSent && !model.otpVerified) {
-                            final success = await controller
-                                .verifyOtp(_otpController.text.trim());
-                            if (success) {
-                              _showNotification("OTP verified", success: true);
-                              _goToStep(2);
-                            } else {
-                              _showNotification("Invalid OTP");
+                            controller.setRequestKey("hardcoded_key_123");
+                            controller.setOtpSent(true);
+                            _goToStep(1);
+                            break;
+
+                          case 1:
+                            if (_otpController.text.isEmpty) {
+                              _showNotification("OTP is required");
+                              return;
                             }
-                          }
-                        } else if (_currentStep == 2) {
-                          _goToStep(3);
-                        } else if (_currentStep == 3) {
-                          if (model.selectedMethod == null) {
-                            _showNotification("Select payment method");
-                            return;
-                          }
+                            final verified =
+                                await controller.verifyOtp(_otpController.text);
+                            if (verified) _goToStep(2);
+                            break;
 
-                          final success = await controller.submitRefund(
-                            paymentMethod: model.selectedMethod,
-                            agencyId: _agencyIdController.text.trim(),
-                            agencyName: _agencyNameController.text.trim(),
-                            license: _licenseController.text.trim(),
-                            accountNo: _accountNumberController.text.trim(),
-                            bankId: _bankNameController.text.trim(),
-                            districtId: _districtController.text.trim(),
-                            branchId: _branchController.text.trim(),
-                            payOrderName: _payOrderNameController.text.trim(),
-                          );
+                          case 2:
+                            if (controller.selectedTrackingNos.isEmpty) {
+                              _showNotification("Select at least one pilgrim");
+                              return;
+                            }
+                            _goToStep(3);
+                            break;
 
-                          if (success) {
-                            _showNotification("Refund submitted successfully",
-                                success: true);
-                            controller.reset();
-                            _trackingController.clear();
-                            _phoneController.clear();
-                            _otpController.clear();
-                            _agencyIdController.clear();
-                            _agencyNameController.clear();
-                            _licenseController.clear();
-                            _accountNumberController.clear();
-                            _bankNameController.clear();
-                            _districtController.clear();
-                            _branchController.clear();
-                            _payOrderNameController.clear();
-                            _goToStep(0);
-                          } else {
-                            _showNotification("Refund submission failed");
-                          }
-                        } else {
-                          _goToStep(_currentStep + 1);
+                          case 3:
+                            final formValid =
+                                (_formKey.currentState?.validate() ?? false) &&
+                                    controller.model.selectedMethod != null;
+
+                            if (!formValid) {
+                              _showNotification(
+                                  "Please select a payment method and fill all required fields");
+                              return;
+                            }
+                            _goToStep(4);
+                            break;
+
+                          case 4:
+                            // In _currentStep == 4
+                            final submitted = await controller.submitRefund(
+                              paymentData: {
+                                'agency_id':
+                                    int.tryParse(_agencyIdController.text),
+                                'pay_order_name': _payOrderNameController.text,
+                                'beftn_account_name':
+                                    _agencyNameController.text,
+                                'beftn_account_no':
+                                    _accountNumberController.text,
+                                'beftn_bank_id':
+                                    int.tryParse(_bankNameController.text),
+                                'beftn_district_id':
+                                    int.tryParse(_districtController.text),
+                                'beftn_branch_id':
+                                    int.tryParse(_branchController.text),
+                              },
+                            );
+
+                            if (submitted) {
+                              _showNotification("Refund submitted",
+                                  success: true);
+                              controller.reset();
+                              _trackingController.clear();
+                              _phoneController.clear();
+                              _otpController.clear();
+                              _goToStep(0);
+                            }
+                            break;
                         }
                       },
-                      child: Text(_currentStep == 0
-                          ? "Next"
-                          : (_currentStep == 1 && !model.otpSent
-                              ? "Send OTP"
-                              : (_currentStep == 1 &&
-                                      model.otpSent &&
-                                      !model.otpVerified
-                                  ? "Verify OTP"
-                                  : (_currentStep == 3
-                                      ? "Submit"
-                                      : "Next")))))),
-            ],
-          ),
-          const SizedBox(height: 16),
+                      child: Text(_currentStep == 4 ? "Submit" : "Next")),
+                )
+              ],
+            ),
+          )
         ],
       ),
     );
   }
 
   Widget _buildStepper() {
-    final steps = ['1', '2', '3', '4', '5'];
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceAround,
-      children: List.generate(steps.length * 2 - 1, (index) {
-        if (index.isEven) {
-          int stepIndex = index ~/ 2;
-          bool isActive = stepIndex <= _currentStep;
-          return CircleAvatar(
-            radius: 16,
-            backgroundColor: isActive ? Colors.blue : Colors.grey.shade300,
-            child: Text(
-              steps[stepIndex],
-              style: TextStyle(
-                  color: isActive ? Colors.white : Colors.black54,
-                  fontWeight: FontWeight.bold),
-            ),
-          );
-        } else {
-          bool isActive = (index ~/ 2) < _currentStep;
-          return Expanded(
-              child: Container(
-                  height: 3,
-                  color: isActive ? Colors.blue : Colors.grey.shade300));
-        }
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: List.generate(5, (i) {
+        return CircleAvatar(
+          radius: 16,
+          backgroundColor: _currentStep >= i ? Colors.green : Colors.grey,
+          child: Text(
+            "${i + 1}",
+            style: const TextStyle(color: Colors.white),
+          ),
+        );
       }),
     );
   }
 
-  // ----------------- STEP WIDGETS -----------------
   Widget _step0(RefundController controller) {
-    final list = ref.watch(preRegListProvider);
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          TextFormField(
+          TextField(
             controller: _trackingController,
-            decoration: const InputDecoration(
-                labelText: "Tracking Number", border: OutlineInputBorder()),
+            decoration: const InputDecoration(labelText: "Tracking No"),
           ),
-          const SizedBox(height: 16),
-          Expanded(
-            child: list.when(
-                data: (data) => data.isNotEmpty
-                    ? ListView.builder(
-                        itemCount: data.length,
-                        itemBuilder: (context, index) {
-                          final item = data[index];
-                          return Card(
-                            child: ListTile(
-                              title: Text(item.name ?? ""),
-                              subtitle: Text(item.trackingNo ?? ""),
-                              onTap: () {
-                                controller.setPilgrim(item);
-                                _trackingController.text =
-                                    item.trackingNo ?? "";
-                              },
-                            ),
-                          );
-                        },
-                      )
-                    : const Center(child: Text("No data found")),
-                error: (e, _) => Center(child: Text("Error: $e")),
-                loading: () =>
-                    const Center(child: CircularProgressIndicator())),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _phoneController,
+            decoration: const InputDecoration(labelText: "Phone"),
           ),
         ],
       ),
@@ -495,116 +586,45 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
   }
 
   Widget _step1(RefundController controller) {
-    final model = controller.model;
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: TextField(
+        controller: _otpController,
+        decoration: const InputDecoration(labelText: "Enter OTP"),
+      ),
+    );
+  }
+
+  Widget _step2AddPilgrim(RefundController controller) {
+    final pilgrims = controller.model.groupPilgrims;
     return Padding(
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          TextFormField(
-            controller: _phoneController,
-            keyboardType: TextInputType.phone,
-            decoration: const InputDecoration(
-                labelText: "Phone Number", border: OutlineInputBorder()),
-          ),
-          const SizedBox(height: 16),
-          if (model.otpSent)
-            TextFormField(
-              controller: _otpController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                  labelText: "Enter OTP", border: OutlineInputBorder()),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _step2(RefundController controller) {
-    return Center(
-      child: Text(
-        "OTP Verified! Proceed to payment info.",
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-
-  Widget _step3(RefundController controller) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Text("Select Payment Method",
+          const Text("Select Additional Pilgrims",
               style: TextStyle(fontWeight: FontWeight.bold)),
           const SizedBox(height: 16),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-            children: [
-              _methodButton("Hajj_Agency", "Hajj Agency", controller),
-              _methodButton("BEFTN", "BEFTN", controller),
-              _methodButton("Pay_Order", "Pay Order", controller),
-            ],
+          Expanded(
+            child: ListView.builder(
+              itemCount: pilgrims.length,
+              itemBuilder: (context, index) {
+                final p = pilgrims[index];
+                final isSelected =
+                    controller.selectedTrackingNos.contains(p['tracking_no']);
+                return CheckboxListTile(
+                  value: isSelected,
+                  title: Text(p['full_name_english'] ?? ""),
+                  subtitle: Text("Tracking No: ${p['tracking_no']}"),
+                  onChanged: (v) {
+                    controller.togglePilgrimSelection(
+                        p['tracking_no'], v ?? false);
+                    setState(() {});
+                  },
+                );
+              },
+            ),
           ),
-          const SizedBox(height: 16),
-          if (controller.model.selectedMethod == "Hajj_Agency") ...[
-            TextFormField(
-              controller: _agencyIdController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                  labelText: "Agency ID", border: OutlineInputBorder()),
-            ),
-          ],
-          if (controller.model.selectedMethod == "BEFTN") ...[
-            TextFormField(
-              controller: _agencyNameController,
-              decoration: const InputDecoration(
-                  labelText: "Account Owner", border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _accountNumberController,
-              decoration: const InputDecoration(
-                  labelText: "Account No", border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _bankNameController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                  labelText: "Bank ID", border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _districtController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                  labelText: "District ID", border: OutlineInputBorder()),
-            ),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _branchController,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(
-                  labelText: "Branch ID", border: OutlineInputBorder()),
-            ),
-          ],
-          if (controller.model.selectedMethod == "Pay_Order") ...[
-            TextFormField(
-              controller: _payOrderNameController,
-              decoration: const InputDecoration(
-                  labelText: "Pay Order Name", border: OutlineInputBorder()),
-            ),
-          ],
         ],
-      ),
-    );
-  }
-
-  Widget _step4(RefundController controller) {
-    return Center(
-      child: Text(
-        "Review your payment info and click Submit",
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
       ),
     );
   }
@@ -639,6 +659,267 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
                     fontWeight: FontWeight.bold)),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _step3PaymentMethod(RefundController controller) {
+    return Form(
+      key: _formKey, // Use the _formKey from the state, not a new one
+      autovalidateMode: AutovalidateMode.onUserInteraction,
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text("Select Payment Method",
+                style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                _methodButton("hajj_agency", "hajj_agency", controller),
+                const SizedBox(width: 8),
+                _methodButton("beftn", "beftn", controller),
+                const SizedBox(width: 8),
+                _methodButton("pay_order", "pay_order", controller),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            if (controller.model.selectedMethod == null)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text("Please select a payment method",
+                    style: TextStyle(color: Colors.red)),
+              ),
+
+            /// ----------------- HAJJ AGENCY -----------------
+            if (controller.model.selectedMethod == "hajj_agency") ...[
+              FutureBuilder<List<dynamic>>(
+                future: Dio(BaseOptions(
+                  baseUrl: baseUrlDevelopment,
+                  headers: {
+                    'Authorization': 'Bearer ${ref.read(authTokenProvider)}',
+                    'Content-Type': 'application/json',
+                  },
+                )).get('/v2/user/dropdown/agencies').then((res) => res.data),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData)
+                    return const CircularProgressIndicator();
+                  final agencies = snapshot.data ?? [];
+                  return DropdownButtonFormField<int>(
+                    isExpanded: true,
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      labelText: "Select Hajj Agency",
+                    ),
+                    value: int.tryParse(_agencyIdController.text),
+                    validator: (val) =>
+                        val == null ? "Please select an agency" : null,
+                    items: agencies.map<DropdownMenuItem<int>>((agency) {
+                      return DropdownMenuItem<int>(
+                        value: agency["id"],
+                        child: Text(
+                          "${agency["name"]} (${agency["license_no"] ?? "N/A"})",
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      );
+                    }).toList(),
+                    onChanged: (val) {
+                      if (val != null)
+                        _agencyIdController.text = val.toString();
+                    },
+                  );
+                },
+              ),
+            ],
+
+            /// ----------------- BEFTN -----------------
+            if (controller.model.selectedMethod == "beftn") ...[
+              TextFormField(
+                controller: _agencyNameController,
+                decoration: const InputDecoration(
+                    labelText: "Account Owner Name",
+                    border: OutlineInputBorder()),
+                validator: (v) =>
+                    v == null || v.isEmpty ? "This field is required" : null,
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _accountNumberController,
+                decoration: const InputDecoration(
+                    labelText: "Account Number", border: OutlineInputBorder()),
+                validator: (v) =>
+                    v == null || v.isEmpty ? "This field is required" : null,
+              ),
+              const SizedBox(height: 8),
+
+              /// Bank Dropdown
+              FutureBuilder<List<dynamic>>(
+                future: Dio(BaseOptions(
+                  baseUrl: baseUrlDevelopment,
+                  headers: {
+                    'Authorization': 'Bearer ${ref.read(authTokenProvider)}',
+                    'Content-Type': 'application/json',
+                  },
+                )).get('/v2/user/dropdown/banks').then((res) => res.data),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData)
+                    return const CircularProgressIndicator();
+                  final banks = snapshot.data ?? [];
+                  int? selectedBankId = int.tryParse(_bankNameController.text);
+                  return SizedBox(
+                    width: double.infinity,
+                    child: DropdownButtonFormField<int>(
+                      decoration: const InputDecoration(
+                          labelText: "Bank", border: OutlineInputBorder()),
+                      value: selectedBankId,
+                      validator: (v) =>
+                          v == null ? "Please select a bank" : null,
+                      items: banks.map((bank) {
+                        return DropdownMenuItem<int>(
+                          value: bank["id"],
+                          child: Text(
+                            bank["title"],
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null)
+                          _bankNameController.text = val.toString();
+                      },
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+
+              /// District Dropdown
+              FutureBuilder<List<dynamic>>(
+                future: Dio(BaseOptions(
+                  baseUrl: baseUrlDevelopment,
+                  headers: {
+                    'Authorization': 'Bearer ${ref.read(authTokenProvider)}',
+                    'Content-Type': 'application/json',
+                  },
+                )).get('/v2/user/dropdown/districts').then((res) => res.data),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData)
+                    return const CircularProgressIndicator();
+                  final districts = snapshot.data ?? [];
+                  int? selectedDistrictId =
+                      int.tryParse(_districtController.text);
+                  return SizedBox(
+                    width: double.infinity,
+                    child: DropdownButtonFormField<int>(
+                      decoration: const InputDecoration(
+                          labelText: "District", border: OutlineInputBorder()),
+                      value: selectedDistrictId,
+                      validator: (v) =>
+                          v == null ? "Please select a district" : null,
+                      items: districts.map((d) {
+                        return DropdownMenuItem<int>(
+                          value: d["id"],
+                          child: Text(
+                            d["title"],
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null)
+                          _districtController.text = val.toString();
+                      },
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+
+              /// Branch Dropdown
+              FutureBuilder<List<dynamic>>(
+                future: Dio(BaseOptions(
+                  baseUrl: baseUrlDevelopment,
+                  headers: {
+                    'Authorization': 'Bearer ${ref.read(authTokenProvider)}',
+                    'Content-Type': 'application/json',
+                  },
+                ))
+                    .get('/v2/user/dropdown/bank_branches')
+                    .then((res) => res.data),
+                builder: (context, snapshot) {
+                  if (!snapshot.hasData) {
+                    return const CircularProgressIndicator();
+                  }
+                  final branches = snapshot.data ?? [];
+                  int? selectedBranchId = int.tryParse(_branchController.text);
+                  return SizedBox(
+                    width: double.infinity,
+                    child: DropdownButtonFormField<int>(
+                      decoration: const InputDecoration(
+                          labelText: "Branch", border: OutlineInputBorder()),
+                      value: selectedBranchId,
+                      validator: (v) =>
+                          v == null ? "Please select a branch" : null,
+                      items: branches.map((b) {
+                        return DropdownMenuItem<int>(
+                          value: b["id"],
+                          child: Text(
+                            b["title"],
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        );
+                      }).toList(),
+                      onChanged: (val) {
+                        if (val != null)
+                          _branchController.text = val.toString();
+                      },
+                    ),
+                  );
+                },
+              ),
+            ],
+
+            /// ----------------- PAY ORDER -----------------
+            if (controller.model.selectedMethod == "pay_order") ...[
+              TextFormField(
+                controller: _payOrderNameController,
+                decoration: const InputDecoration(
+                    labelText: "Account Owner Name",
+                    border: OutlineInputBorder()),
+                validator: (v) =>
+                    v == null || v.isEmpty ? "This field is required" : null,
+              ),
+            ],
+
+            const SizedBox(height: 24),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _step4Review(RefundController controller) {
+    final selectedPilgrims = controller.model.groupPilgrims
+        .where((p) => controller.selectedTrackingNos.contains(p['tracking_no']))
+        .toList();
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("Review Refund",
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+          const SizedBox(height: 16),
+          Text("Payment Method: ${controller.model.selectedMethod ?? "-"}"),
+          const SizedBox(height: 8),
+          const Text("Selected Pilgrims:"),
+          ...selectedPilgrims.map(
+              (p) => Text("${p['full_name_english']} (${p['tracking_no']})")),
+        ],
       ),
     );
   }
