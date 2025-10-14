@@ -1,608 +1,11 @@
-import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:labbayk/features/auth/providers/login_provider.dart';
-
-// ----------------- Logger -----------------
-class AppLoggerRefund {
-  static void i(String message) => debugPrint("💡 $message");
-  static void e(String message) => debugPrint("⛔ $message");
-}
-
-// ----------------- Refund Model -----------------
-class RefundModel {
-  String? selectedMethod;
-  bool otpSent = false;
-  bool otpVerified = false;
-  String requestKey = "";
-  Map<String, dynamic>? pilgrimData;
-  int? groupPaymentReference;
-  List<Map<String, dynamic>> groupPilgrims = [];
-}
-
-class RefundApiClient {
-  final Dio dio = Dio(BaseOptions(
-    baseUrl: 'https://labbaik-api.innofast.tech',
-    headers: {'Content-Type': 'application/json'},
-  ));
-
-  Future<List<dynamic>> fetchRefundList(Ref ref) async {
-    final token = ref.read(authTokenProvider);
-    final url = '/v2/user/refunds';
-    try {
-      AppLoggerRefund.i("⏳ [API REQUEST] GET $url");
-      final res = await dio.get(url,
-          options: Options(headers: {'Authorization': 'Bearer $token'}));
-      AppLoggerRefund.i(
-          "✅ [API RESPONSE] ${res.statusCode} $url\nData: ${res.data}");
-      return res.data ?? [];
-    } catch (e) {
-      AppLoggerRefund.e("Fetch refund list error: $e");
-      return [];
-    }
-  }
-
-  Future<Map<String, dynamic>?> fetchRefundDetail(Ref ref, int refundId) async {
-    final token = ref.read(authTokenProvider);
-    final url = '/v2/user/refunds/$refundId';
-    try {
-      AppLoggerRefund.i("⏳ [API REQUEST] GET $url");
-      final res = await dio.get(url,
-          options: Options(headers: {'Authorization': 'Bearer $token'}));
-      AppLoggerRefund.i(
-          "✅ [API RESPONSE] ${res.statusCode} $url\nData: ${res.data}");
-      if (res.data != null && res.data is Map) {
-        return Map<String, dynamic>.from(res.data);
-      }
-      return null;
-    } catch (e) {
-      AppLoggerRefund.e("Fetch refund detail error: $e");
-      return null;
-    }
-  }
-
-  Future<String> sendOtp(
-      Ref ref, String trackingNo, String phone, String forWhat) async {
-    final token = ref.read(authTokenProvider);
-    final url = '/v2/user/refunds/get_otp';
-
-    if (forWhat != "pre_registration" && forWhat != "registration") {
-      final errorMsg =
-          "Invalid 'for' parameter: '$forWhat'. Must be 'pre_registration' or 'registration'.";
-      AppLoggerRefund.e(errorMsg);
-      throw ArgumentError(errorMsg);
-    }
-
-    final body = {'tracking_no': trackingNo, 'phone': phone, 'for': forWhat};
-
-    try {
-      AppLoggerRefund.i(
-          "⏳ [API REQUEST] POST $url\nHeaders: Authorization: Bearer $token\nData: $body");
-      final res = await dio.post(
-        url,
-        data: jsonEncode(body),
-        options: Options(
-          headers: {'Authorization': 'Bearer $token'},
-          validateStatus: (status) => status != null && status < 500,
-        ),
-      );
-
-      AppLoggerRefund.i(
-          "💡 [API RESPONSE] ${res.statusCode} $url\nData: ${res.data}");
-      if (res.statusCode == 200) {
-        final requestKey = res.data['request_key'];
-        if (requestKey == null) {
-          throw Exception("API did not return request_key");
-        }
-        return requestKey;
-      } else if (res.statusCode == 422 || res.statusCode == 400) {
-        throw Exception(res.data['error'] ?? 'Validation or bad request');
-      } else {
-        throw Exception('Unexpected error ${res.statusCode}: ${res.data}');
-      }
-    } catch (e) {
-      AppLoggerRefund.e("⛔ Send OTP error: $e");
-      rethrow;
-    }
-  }
-
-  Future<Map<String, dynamic>?> verifyOtp(
-      Ref ref, String requestKey, String otp) async {
-    final token = ref.read(authTokenProvider);
-    final url = '/v2/user/refunds/verify_otp';
-    final body = {'request_key': requestKey, 'otp': otp};
-
-    try {
-      AppLoggerRefund.i("⏳ [API REQUEST] POST $url\nData: $body");
-      final res = await dio.post(
-        url,
-        data: jsonEncode(body),
-        options: Options(
-          headers: {'Authorization': 'Bearer $token'},
-          validateStatus: (status) => status != null && status < 500,
-        ),
-      );
-
-      AppLoggerRefund.i(
-          "💡 [API RESPONSE] ${res.statusCode} $url\nData: ${res.data}");
-      if (res.statusCode == 200 &&
-          res.data != null &&
-          res.data['pilgrim_info'] != null) {
-        return Map<String, dynamic>.from(res.data);
-      } else if (res.statusCode == 422) {
-        throw Exception(res.data['error'] ?? 'Validation error');
-      } else if (res.statusCode == 404) {
-        throw Exception(
-            'OTP verification failed: request_key not found or expired');
-      } else {
-        throw Exception('Unexpected error ${res.statusCode}: ${res.data}');
-      }
-    } catch (e) {
-      AppLoggerRefund.e("⛔ Verify OTP error: $e");
-      rethrow;
-    }
-  }
-
-  Future<bool> submitRefundWithDirectFields(
-      Ref ref, Map<String, dynamic> body) async {
-    final token = ref.read(authTokenProvider);
-    final url = '/v2/user/refunds/submit';
-
-    try {
-      AppLoggerRefund.i(
-          "⏳ [API REQUEST] POST $url\nData: $body, 'Authorization': 'Bearer $token',");
-      final res = await dio.post(
-        url,
-        // data: jsonEncode(body),
-        data: FormData.fromMap(body),
-        options: Options(
-          headers: {
-            'Authorization': 'Bearer $token',
-            'Content-Type': 'application/form-data'
-          },
-          validateStatus: (status) => status != null && status < 500,
-        ),
-      );
-      AppLoggerRefund.i(
-          "💡 [API RESPONSE] ${res.statusCode} $url\nData: ${res.data}");
-      if (res.statusCode == 200) return true;
-      final error = res.data['error'] ?? 'Validation or bad request';
-      throw Exception(error);
-    } catch (e) {
-      AppLoggerRefund.e("⛔ Submit refund error: $e");
-      return false;
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> fetchHajjAgencies(Ref ref,
-      {String? keywords}) async {
-    final token = ref.read(authTokenProvider);
-    final url = '/v2/user/dropdown/agencies';
-    try {
-      final res = await dio.get(
-        url,
-        queryParameters: keywords != null ? {'keywords': keywords} : null,
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      );
-
-      AppLoggerRefund.i("Fetch Hajj Agencies response:");
-      AppLoggerRefund.i(res.toString());
-      if (res.statusCode == 200 && res.data is List) {
-        return List<Map<String, dynamic>>.from(res.data);
-      }
-      return [];
-    } catch (e) {
-      AppLoggerRefund.e("Fetch Hajj Agencies error: $e");
-      return [];
-    }
-  }
-
-  Future<List<Map<String, dynamic>>> fetchBanks(Ref ref,
-      {String? keywords}) async {
-    final token = ref.read(authTokenProvider);
-    const url = '/v2/user/dropdown/banks';
-    try {
-      final res = await dio.get(
-        url,
-        queryParameters: keywords != null ? {'keywords': keywords} : null,
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      );
-      AppLoggerRefund.i("Fetch Bank response:");
-      AppLoggerRefund.i(res.toString());
-      if (res.statusCode == 200 && res.data is List) {
-        return List<Map<String, dynamic>>.from(res.data);
-      }
-      return [];
-    } catch (e) {
-      AppLoggerRefund.e("Fetch Banks error: $e");
-      return [];
-    }
-  }
-
-  // ----------------- Fetch Bank Districts -----------------
-  Future<List<Map<String, dynamic>>> fetchBankDistricts(
-    Ref ref, {
-    required int bankId,
-    String? keywords,
-  }) async {
-    final token = ref.read(authTokenProvider);
-    const url = '/v2/user/dropdown/bank_districts';
-
-    try {
-      final res = await dio.get(
-        url,
-        queryParameters: {
-          'bank_id': bankId,
-          if (keywords != null) 'keywords': keywords,
-        },
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      );
-
-      if (res.statusCode == 200 && res.data is List) {
-        return List<Map<String, dynamic>>.from(res.data);
-      }
-
-      return [];
-    } catch (e) {
-      AppLoggerRefund.e("Fetch Bank Districts error: $e");
-      return [];
-    }
-  }
-
-// ----------------- Fetch Bank Branches -----------------
-  Future<List<Map<String, dynamic>>> fetchBankBranches(
-    Ref ref, {
-    required int bankId,
-    required int districtId,
-    String? keywords,
-  }) async {
-    final token = ref.read(authTokenProvider);
-    const url = '/v2/user/dropdown/bank_branches';
-
-    try {
-      final res = await dio.get(
-        url,
-        queryParameters: {
-          'bank_id': bankId,
-          'district_id': districtId,
-          if (keywords != null) 'keywords': keywords,
-        },
-        options: Options(headers: {'Authorization': 'Bearer $token'}),
-      );
-
-      if (res.statusCode == 200 && res.data is List) {
-        return List<Map<String, dynamic>>.from(res.data);
-      }
-
-      return [];
-    } catch (e) {
-      AppLoggerRefund.e("Fetch Bank Branches error: $e");
-      return [];
-    }
-  }
-}
-
-// ----------------- Refund Controller -----------------
-final refundControllerProvider =
-    ChangeNotifierProvider<RefundController>((ref) {
-  return RefundController(ref);
-});
-
-class RefundController extends ChangeNotifier {
-  final Ref ref;
-  RefundController(this.ref);
-
-  final RefundApiClient apiClient = RefundApiClient();
-  final RefundModel model = RefundModel();
-  final Set<String> selectedTrackingNos = {};
-  String? initialTrackingNo;
-
-  List<Map<String, dynamic>> hajjAgencies = [];
-  Map<String, dynamic>? selectedAgency;
-
-  // ----------------- Bank Dropdown States -----------------
-  List<Map<String, dynamic>> bankList = [];
-  List<Map<String, dynamic>> districtList = [];
-  List<Map<String, dynamic>> branchList = [];
-
-  Map<String, dynamic>? selectedBankItem;
-  Map<String, dynamic>? selectedDistrictItem;
-  Map<String, dynamic>? selectedBranchItem;
-
-  // ----------------- Load Banks -----------------
-  Future<void> loadBanks({String? keywords}) async {
-    final newBankList = await apiClient.fetchBanks(ref, keywords: keywords);
-    bankList = newBankList;
-
-    // Keep previous selection if still exists
-    if (selectedBankItem != null) {
-      final exists = bankList.firstWhere(
-        (b) => b['id'] == selectedBankItem!['id'],
-        orElse: () => {},
-      );
-      if (exists.isEmpty) {
-        selectedBankItem = null;
-        selectedDistrictItem = null;
-        selectedBranchItem = null;
-        districtList = [];
-        branchList = [];
-      }
-    }
-
-    notifyListeners();
-  }
-
-  Future<void> loadHajjAgencies({String? keywords}) async {
-    final newHajjAgencies =
-        await apiClient.fetchHajjAgencies(ref, keywords: keywords);
-    hajjAgencies = newHajjAgencies;
-
-    // Keep previous selection if still exists
-    if (selectedBankItem != null) {
-      final exists = bankList.firstWhere(
-        (b) => b['id'] == selectedBankItem!['id'],
-        orElse: () => {},
-      );
-      if (exists.isEmpty) {
-        selectedBankItem = null;
-        selectedDistrictItem = null;
-        selectedBranchItem = null;
-        districtList = [];
-        branchList = [];
-      }
-    }
-
-    notifyListeners();
-  }
-
-// ----------------- Load Districts -----------------
-  Future<void> loadDistricts({String? keywords}) async {
-    if (selectedBankItem == null) return;
-    final newDistrictList = await apiClient.fetchBankDistricts(
-      ref,
-      bankId: selectedBankItem!['id'],
-      keywords: keywords,
-    );
-    districtList = newDistrictList;
-
-    // Keep previous selection if still exists
-    if (selectedDistrictItem != null) {
-      final exists = districtList.firstWhere(
-        (d) => d['id'] == selectedDistrictItem!['id'],
-        orElse: () => {},
-      );
-      if (exists.isEmpty) {
-        selectedDistrictItem = null;
-        selectedBranchItem = null;
-        branchList = [];
-      }
-    }
-
-    notifyListeners();
-  }
-
-// ----------------- Load Branches -----------------
-  Future<void> loadBranches({String? keywords}) async {
-    if (selectedBankItem == null || selectedDistrictItem == null) return;
-    final newBranchList = await apiClient.fetchBankBranches(
-      ref,
-      bankId: selectedBankItem!['id'],
-      districtId: selectedDistrictItem!['id'],
-      keywords: keywords,
-    );
-    branchList = newBranchList;
-
-    // Keep previous selection if still exists
-    if (selectedBranchItem != null) {
-      final exists = branchList.firstWhere(
-        (b) => b['id'] == selectedBranchItem!['id'],
-        orElse: () => {},
-      );
-      if (exists.isEmpty) selectedBranchItem = null;
-    }
-
-    notifyListeners();
-  }
-
-// ----------------- Setters -----------------
-  Future<void> setSelectedBank(Map<String, dynamic>? bank) async {
-    if (selectedBankItem == bank) return; // only update if different
-    selectedBankItem = bank;
-
-    // Reset dependent dropdowns only if bank changed
-    selectedDistrictItem = null;
-    selectedBranchItem = null;
-    districtList = [];
-    branchList = [];
-    notifyListeners();
-
-    if (bank != null) {
-      await loadDistricts();
-    }
-  }
-
-  Future<void> setSelectedDistrict(Map<String, dynamic>? district) async {
-    if (selectedDistrictItem == district) return; // only update if different
-    selectedDistrictItem = district;
-
-    // Reset dependent dropdowns only if district changed
-    selectedBranchItem = null;
-    branchList = [];
-    notifyListeners();
-
-    if (district != null) {
-      await loadBranches();
-    }
-  }
-
-  void setSelectedBranch(Map<String, dynamic>? branch) {
-    selectedBranchItem = branch;
-    notifyListeners();
-  }
-
-  // ----------------- Setters -----------------
-  void setSelectedMethod(String? method) {
-    model.selectedMethod = method;
-    notifyListeners();
-  }
-
-  void setOtpSent(bool value) {
-    model.otpSent = value;
-    notifyListeners();
-  }
-
-  void setOtpVerified(bool value) {
-    model.otpVerified = value;
-    notifyListeners();
-  }
-
-  void setRequestKey(String key) {
-    model.requestKey = key;
-    notifyListeners();
-  }
-
-  void togglePilgrimSelection(String trackingNo, bool isSelected) {
-    // ✅ Prevent unselecting the initially entered tracking number
-    if (trackingNo == initialTrackingNo) return;
-    if (isSelected) {
-      selectedTrackingNos.add(trackingNo);
-    } else {
-      selectedTrackingNos.remove(trackingNo);
-    }
-    notifyListeners();
-  }
-
-  bool isPilgrimSelected(String trackingNo) =>
-      selectedTrackingNos.contains(trackingNo);
-
-  void setSelectedAgency(Map<String, dynamic>? agency) {
-    selectedAgency = agency;
-    notifyListeners();
-  }
-
-  // Future<void> loadHajjAgencies() async {
-  //   hajjAgencies = await apiClient.fetchHajjAgencies(ref);
-  //   notifyListeners();
-  // }
-
-  // Inside RefundController
-
-  // Future<void> loadAgencies({String? keywords}) async {
-  //   try {
-  //     // Fetch the response from the API
-  //     final response =
-  //         await apiClient.fetchHajjAgencies(ref, keywords: keywords);
-
-  //     // Log the exact response
-  //     AppLogger.i("💡 Hajj Agencies Response: ${response.toString()}");
-
-  //     // Assign it to your variable
-  //     hajjAgencies = response;
-
-  //     // Notify listeners to update UI
-  //     notifyListeners();
-  //   } catch (e, stackTrace) {
-  //     AppLogger.i("⛔ Failed to load Hajj Agencies: $e");
-  //     AppLogger.i(stackTrace.toString());
-  //   }
-  // }
-
-  // ----------------- Fetch Refunds -----------------
-  Future<List<Map<String, dynamic>>> fetchRefundList() async {
-    try {
-      final list = await apiClient.fetchRefundList(ref);
-      return (list ?? [])
-          .map((item) => Map<String, dynamic>.from(item))
-          .toList();
-    } catch (e) {
-      AppLoggerRefund.e("Controller fetchRefundList error: $e");
-      return [];
-    }
-  }
-
-  Future<Map<String, dynamic>?> fetchRefundDetail(int refundId) async {
-    try {
-      return await apiClient.fetchRefundDetail(ref, refundId);
-    } catch (e) {
-      AppLoggerRefund.e("Controller fetchRefundDetail error: $e");
-      return null;
-    }
-  }
-
-  // ----------------- OTP -----------------
-  Future<void> sendOtp(String trackingNo, String phone, String forWhat) async {
-    final requestKey = await apiClient.sendOtp(ref, trackingNo, phone, forWhat);
-    setRequestKey(requestKey);
-    setOtpSent(true);
-  }
-
-  Future<bool> verifyOtp(String otp) async {
-    final data = await apiClient.verifyOtp(ref, model.requestKey, otp);
-
-    if (data != null && data['pilgrim_info'] != null) {
-      model.pilgrimData = Map<String, dynamic>.from(data['pilgrim_info']);
-      model.groupPaymentReference = int.tryParse(
-          data['pilgrim_info']['group_payment_id']?.toString() ?? '');
-      model.groupPilgrims =
-          List<Map<String, dynamic>>.from(data['group_pilgrim_list'] ?? []);
-      setOtpVerified(true);
-      return true;
-    }
-
-    setOtpVerified(false);
-    return false;
-  }
-
-  Future<bool> submitRefund(
-      {Map<String, dynamic>? paymentData, int? agencyId}) async {
-    if (model.requestKey.isEmpty || selectedTrackingNos.isEmpty) return false;
-
-    if (model.selectedMethod == null) {
-      AppLoggerRefund.e("⛔ Payment method is not selected");
-      return false;
-    }
-
-    // Add agency_id if Hajj Agency or any explicit agency
-
-    // ---------------- Prepare request body ----------------
-    final Map<String, dynamic> requestBody = {
-      'request_key': model.requestKey,
-      //'tracking_nos[]': "N17FE71E20", //["N17FE71E20", "N17FE5977A"],
-      'tracking_nos[]': selectedTrackingNos.toList(growable: false),
-      'agency_id': agencyId,
-      'payment_type': model.selectedMethod!,
-    };
-
-    // Merge paymentData directly into requestBody (flattened)
-    if (paymentData != null && paymentData.isNotEmpty) {
-      requestBody.addAll(paymentData);
-    }
-
-    // ---------------- Call API ----------------
-    try {
-      final success =
-          await apiClient.submitRefundWithDirectFields(ref, requestBody);
-      return success;
-    } catch (e) {
-      AppLoggerRefund.e("⛔ Submit refund error: $e");
-      return false;
-    }
-  }
-
-  // ----------------- Reset -----------------
-  void reset() {
-    model.otpSent = false;
-    model.otpVerified = false;
-    model.requestKey = "";
-    model.selectedMethod = null;
-    model.groupPaymentReference = null;
-    model.pilgrimData = null;
-    model.groupPilgrims.clear();
-    selectedTrackingNos.clear();
-    notifyListeners();
-  }
-}
+import 'package:labbayk/core/network/api_client.dart';
+import 'package:labbayk/core/theme/colors.dart';
+import 'package:labbayk/core/utils/logger.dart';
+import 'package:labbayk/features/refund/domain/refund_model.dart';
+import 'package:labbayk/features/refund/providers/refund_provider.dart';
 
 // ----------------- Refund UI -----------------
 class RefundScreen extends ConsumerStatefulWidget {
@@ -648,10 +51,10 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
         controller.loadBanks(),
         controller.loadHajjAgencies(),
       ]).then((_) {
-        AppLoggerRefund.i(
+        AppLogger.i(
             "💡 Preloaded Banks (${controller.bankList.length}) and Agencies (${controller.hajjAgencies.length})");
       }).catchError((e) {
-        AppLoggerRefund.e("⛔ Error preloading banks/agencies: $e");
+        AppLogger.e("⛔ Error preloading banks/agencies: $e");
       });
     }
   }
@@ -745,7 +148,7 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
                         Expanded(
                           child: ElevatedButton(
                             style: ElevatedButton.styleFrom(
-                              backgroundColor: Colors.green,
+                              backgroundColor: primaryColor,
                               foregroundColor: Colors.white,
                               padding: const EdgeInsets.symmetric(vertical: 14),
                               textStyle: const TextStyle(fontSize: 15),
@@ -918,10 +321,10 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
           final isActive = stepIndex <= _currentStep;
           return CircleAvatar(
             radius: 14,
-            backgroundColor: isActive ? Colors.green : Colors.grey.shade400,
+            backgroundColor: isActive ? primaryColor : grey,
             child: Text(
               "${stepIndex + 1}",
-              style: const TextStyle(color: Colors.white, fontSize: 12),
+              style: const TextStyle(color: textColorPrimary, fontSize: 12),
             ),
           );
         } else {
@@ -930,7 +333,7 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
           return Expanded(
             child: Container(
               height: 3,
-              color: isLineActive ? Colors.green : Colors.grey.shade300,
+              color: isLineActive ? primaryColor : grey,
             ),
           );
         }
@@ -1029,7 +432,7 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
                   icon: const Icon(Icons.add),
                   label: const Text("Start New Refund"),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
+                    backgroundColor: primaryColor,
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(
                         vertical: 14, horizontal: 24),
@@ -1108,13 +511,16 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
         children: [
           const Text(
             "Enter OTP",
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: textColorPrimary),
           ),
           const SizedBox(height: 8),
           const Text(
             "We’ve sent a 6-digit OTP to your phone number.",
             textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.grey),
+            style: TextStyle(color: textColorSecondary),
           ),
           const SizedBox(height: 24),
 
@@ -1132,12 +538,12 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
                     counterText: "",
                     enabledBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
-                      borderSide: const BorderSide(color: Colors.grey),
+                      borderSide: const BorderSide(color: seaGreen),
                     ),
                     focusedBorder: OutlineInputBorder(
                       borderRadius: BorderRadius.circular(8),
                       borderSide:
-                          const BorderSide(color: Colors.green, width: 2),
+                          const BorderSide(color: primaryColor, width: 2),
                     ),
                   ),
                   onChanged: (val) {
@@ -1165,11 +571,11 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
 
           // --- Resend OTP ---
           TextButton.icon(
-            icon: const Icon(Icons.refresh, color: Colors.green),
+            icon: const Icon(Icons.refresh, color: primaryColor),
             label: const Text(
               "Resend OTP",
-              style:
-                  TextStyle(color: Colors.green, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                  color: textColorPrimary, fontWeight: FontWeight.bold),
             ),
             onPressed: () async {
               final tracking = _trackingController.text.trim();
@@ -1196,7 +602,11 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
   Widget _step2AddPilgrim(RefundController controller) {
     final pilgrims = controller.model.groupPilgrims;
     if (pilgrims.isEmpty) {
-      return const Center(child: Text("No pilgrims found"));
+      return const Center(
+          child: Text(
+        "No pilgrims found",
+        style: TextStyle(color: textColorPrimary),
+      ));
     }
 
     return ListView.builder(
@@ -1215,7 +625,7 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
           title: Text(
             name,
             style: TextStyle(
-              color: isInitial ? Colors.grey.shade600 : null,
+              color: isInitial ? textColorPrimary : textColorSecondary,
               fontWeight: isInitial ? FontWeight.bold : FontWeight.normal,
             ),
           ),
@@ -1270,7 +680,10 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
         value: controller.selectedAgency != null
             ? int.tryParse(controller.selectedAgency!['id'].toString())
             : null,
-        hint: const Text("Select Agency"),
+        hint: const Text(
+          "Select Agency",
+          style: TextStyle(color: textColorPrimary),
+        ),
         isExpanded: true,
         decoration: InputDecoration(
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
@@ -1294,92 +707,121 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
 
     // --- Bank Dropdown ---
     Widget bankDropdown() {
-      if (controller.bankList.isEmpty) return const CircularProgressIndicator();
+      final isEnabled = controller.selectedAgency != null;
 
       return DropdownButtonFormField<int>(
         value: controller.selectedBankItem != null
             ? controller.selectedBankItem!['id'] as int
             : null,
-        hint: const Text("Select Bank"),
+        hint: Text(
+          "Select Bank",
+          style: TextStyle(
+            color:
+                isEnabled ? textColorPrimary : Colors.grey, // grey if disabled
+          ),
+        ),
         isExpanded: true,
         decoration: InputDecoration(
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         ),
-        items: controller.bankList.map((b) {
-          return DropdownMenuItem<int>(
-            value: b['id'] as int,
-            child: Text(b['title'] ?? ''),
-          );
-        }).toList(),
-        onChanged: (val) async {
-          if (val == null) return;
-          final bank = controller.bankList.firstWhere((b) => b['id'] == val);
-          await controller.setSelectedBank(bank);
-        },
+        items: isEnabled
+            ? controller.bankList.map((b) {
+                return DropdownMenuItem<int>(
+                  value: b['id'] as int,
+                  child: Text(b['title'] ?? ''),
+                );
+              }).toList()
+            : [],
+        onChanged: isEnabled
+            ? (val) async {
+                if (val == null) return;
+                final bank =
+                    controller.bankList.firstWhere((b) => b['id'] == val);
+                await controller.setSelectedBank(bank);
+              }
+            : null,
       );
     }
 
-    // --- District Dropdown ---
+// --- District Dropdown ---
     Widget districtDropdown() {
-      if (controller.districtList.isEmpty)
-        return const CircularProgressIndicator();
+      final isEnabled = controller.selectedBankItem != null;
 
       return DropdownButtonFormField<int>(
         value: controller.selectedDistrictItem != null
             ? controller.selectedDistrictItem!['id'] as int
             : null,
-        hint: const Text("Select District"),
+        hint: Text(
+          "Select District",
+          style: TextStyle(
+            color:
+                isEnabled ? textColorPrimary : Colors.grey, // grey if disabled
+          ),
+        ),
         isExpanded: true,
         decoration: InputDecoration(
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         ),
-        items: controller.districtList.map((d) {
-          return DropdownMenuItem<int>(
-            value: d['id'] as int,
-            child: Text(d['title'] ?? ''),
-          );
-        }).toList(),
-        onChanged: (val) async {
-          if (val == null) return;
-          final district =
-              controller.districtList.firstWhere((d) => d['id'] == val);
-          await controller.setSelectedDistrict(district);
-        },
+        items: isEnabled
+            ? controller.districtList.map((d) {
+                return DropdownMenuItem<int>(
+                  value: d['id'] as int,
+                  child: Text(d['title'] ?? ''),
+                );
+              }).toList()
+            : [],
+        onChanged: isEnabled
+            ? (val) async {
+                if (val == null) return;
+                final district =
+                    controller.districtList.firstWhere((d) => d['id'] == val);
+                await controller.setSelectedDistrict(district);
+              }
+            : null,
       );
     }
 
-    // --- Branch Dropdown ---
+// --- Branch Dropdown ---
     Widget branchDropdown() {
-      if (controller.branchList.isEmpty)
-        return const CircularProgressIndicator();
+      final isEnabled = controller.selectedDistrictItem != null;
 
       return DropdownButtonFormField<int>(
         value: controller.selectedBranchItem != null
             ? controller.selectedBranchItem!['id'] as int
             : null,
-        hint: const Text("Select Branch"),
+        hint: Text(
+          "Select Branch",
+          style: TextStyle(
+            color:
+                isEnabled ? textColorPrimary : Colors.grey, // grey if disabled
+          ),
+        ),
         isExpanded: true,
         decoration: InputDecoration(
           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
         ),
-        items: controller.branchList.map((b) {
-          return DropdownMenuItem<int>(
-            value: b['id'] as int,
-            child: Text(b['title'] ?? ''),
-          );
-        }).toList(),
-        onChanged: (val) {
-          if (val == null) return;
-          final branch =
-              controller.branchList.firstWhere((b) => b['id'] == val);
-          controller.setSelectedBranch(branch);
-        },
+        items: isEnabled
+            ? controller.branchList.map((b) {
+                return DropdownMenuItem<int>(
+                  value: b['id'] as int,
+                  child: Text(b['title'] ?? ''),
+                );
+              }).toList()
+            : [],
+        onChanged: isEnabled
+            ? (val) {
+                if (val == null) return;
+                final branch =
+                    controller.branchList.firstWhere((b) => b['id'] == val);
+                controller.setSelectedBranch(branch);
+              }
+            : null,
       );
     }
 
@@ -1395,7 +837,7 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: paymentMethods.entries.map((entry) {
           final isSelected = controller.model.selectedMethod == entry.key;
-          final isDisabled = entry.key != 'beftn'; // disable all except BEFTN
+          final isDisabled = entry.key != 'beftn'; // Only BEFTN enabled
 
           return Expanded(
             child: Padding(
@@ -1403,12 +845,12 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
                   backgroundColor: isSelected
-                      ? Colors.green
+                      ? primaryColor
                       : isDisabled
-                          ? Colors.grey.shade300
-                          : Colors.grey.shade200,
+                          ? grey
+                          : grey2,
                   foregroundColor: isDisabled
-                      ? Colors.grey.shade600
+                      ? grey
                       : isSelected
                           ? Colors.white
                           : Colors.black87,
@@ -1438,18 +880,18 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
           margin: const EdgeInsets.only(top: 16),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
-            color: Colors.orange.shade50,
+            color: primaryColor,
             borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: Colors.orange.shade200),
+            border: Border.all(color: grey),
           ),
           child: const Row(
             children: [
-              Icon(Icons.lock, color: Colors.orange),
+              Icon(Icons.lock, color: primaryColor),
               SizedBox(width: 8),
               Expanded(
                 child: Text(
                   "This payment method is currently unavailable. Please use Bank Transfer (BEFTN).",
-                  style: TextStyle(fontSize: 13),
+                  style: TextStyle(fontSize: 13, color: textColorPrimary),
                 ),
               ),
             ],
@@ -1490,7 +932,10 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
         children: [
           const Text(
             "Select Payment Method",
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: textColorPrimary),
           ),
           const SizedBox(height: 12),
           paymentTypeSelector(),
@@ -1534,13 +979,19 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text("Selected Method: ${controller.model.selectedMethod ?? '-'}"),
+          Text(
+            "Selected Method: ${controller.model.selectedMethod ?? '-'}",
+            style: TextStyle(color: textColorPrimary),
+          ),
           const SizedBox(height: 8),
           Text(
-              "Selected Pilgrims: ${controller.selectedTrackingNos.join(', ')}"),
+            "Selected Pilgrims: ${controller.selectedTrackingNos.join(', ')}",
+            style: TextStyle(color: textColorPrimary),
+          ),
           const SizedBox(height: 16),
           const Text("Payment Details:",
-              style: TextStyle(fontWeight: FontWeight.bold)),
+              style: TextStyle(
+                  fontWeight: FontWeight.bold, color: textColorPrimary)),
           ...paymentDataPreview.entries
               .map((e) => Text("${e.key}: ${e.value}")),
         ],
