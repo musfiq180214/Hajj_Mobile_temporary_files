@@ -568,8 +568,8 @@ class RefundController extends ChangeNotifier {
     // ---------------- Prepare request body ----------------
     final Map<String, dynamic> requestBody = {
       'request_key': model.requestKey,
-      'tracking_nos[]': "N17FE71E20", //["N17FE71E20", "N17FE5977A"],
-      //'tracking_nos': selectedTrackingNos.toList(growable: false),
+      //'tracking_nos[]': "N17FE71E20", //["N17FE71E20", "N17FE5977A"],
+      'tracking_nos[]': selectedTrackingNos.toList(growable: false),
       'agency_id': agencyId,
       'payment_type': model.selectedMethod!,
     };
@@ -1395,16 +1395,27 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: paymentMethods.entries.map((entry) {
           final isSelected = controller.model.selectedMethod == entry.key;
+          final isDisabled = entry.key != 'beftn'; // disable all except BEFTN
+
           return Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4.0),
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor:
-                      isSelected ? Colors.blue : Colors.grey.shade200,
-                  foregroundColor: isSelected ? Colors.white : Colors.black87,
+                  backgroundColor: isSelected
+                      ? Colors.green
+                      : isDisabled
+                          ? Colors.grey.shade300
+                          : Colors.grey.shade200,
+                  foregroundColor: isDisabled
+                      ? Colors.grey.shade600
+                      : isSelected
+                          ? Colors.white
+                          : Colors.black87,
                 ),
-                onPressed: () => controller.setSelectedMethod(entry.key),
+                onPressed: isDisabled
+                    ? null
+                    : () => controller.setSelectedMethod(entry.key),
                 child: Text(
                   entry.value,
                   textAlign: TextAlign.center,
