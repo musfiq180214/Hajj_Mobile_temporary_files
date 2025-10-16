@@ -1,4 +1,3 @@
-// ----------------- Refund Model -----------------
 class RefundModel {
   String? selectedMethod;
   bool otpSent = false;
