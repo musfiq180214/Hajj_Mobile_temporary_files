@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:labbayk/core/theme/colors.dart';
 import 'package:labbayk/features/refund/providers/refund_provider.dart';
+import 'package:labbayk/features/refund/widgets/dynamic_drop_down.dart';
 
 // ----------------- Refund UI -----------------
 class RefundScreen extends ConsumerStatefulWidget {
@@ -344,46 +345,6 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
     }
   }
 
-  // int _getPageIndexFromStep(String? status) {
-  //   switch (status) {
-  //     case 'otp_verified':
-  //       return 0;
-  //     case 'otp_sent':
-  //       return 0;
-  //     case 'pending':
-  //     default:
-  //       return 0;
-  //   }
-  // }
-
-  // List<Widget> _buildPages(RefundController controller, String? status) {
-  //   if (status == 'otp_verified') {
-  //     // OTP already verified, skip tracking & OTP pages
-  //     return [
-  //       _step2AddPilgrim(controller),
-  //       _step3PaymentMethod(controller),
-  //       _step4Review(controller),
-  //     ];
-  //   } else if (status == 'otp_sent') {
-  //     // OTP sent, start from OTP verification
-  //     return [
-  //       _step1(controller),
-  //       _step2AddPilgrim(controller),
-  //       _step3PaymentMethod(controller),
-  //       _step4Review(controller),
-  //     ];
-  //   } else {
-  //     // Start from tracking & phone entry
-  //     return [
-  //       _step0(controller),
-  //       _step1(controller),
-  //       _step2AddPilgrim(controller),
-  //       _step3PaymentMethod(controller),
-  //       _step4Review(controller),
-  //     ];
-  //   }
-  // }
-
   Widget _stepRefundList(RefundController controller) {
     return FutureBuilder<List<Map<String, dynamic>>>(
       future: controller.fetchRefundList(),
@@ -634,186 +595,51 @@ class _RefundScreenState extends ConsumerState<RefundScreen> {
   }
 
   Widget _step3PaymentMethod(RefundController controller) {
-    // bool validatePaymentMethod(RefundController controller) {
-    //   final method = controller.model.selectedMethod;
-
-    //   if (method == null) return false;
-
-    //   switch (method) {
-    //     case 'beftn':
-    //       if (controller.selectedAgency == null) return false;
-    //       if (_accountNameController.text.trim().isEmpty) return false;
-    //       if (_accountNumberController.text.trim().isEmpty) return false;
-    //       if (controller.selectedBankItem == null) return false;
-    //       if (controller.selectedDistrictItem == null) return false;
-    //       if (controller.selectedBranchItem == null) return false;
-    //       return true;
-
-    //     case 'pay_order':
-    //       if (_payOrderNameController.text.trim().isEmpty) return false;
-    //       return true;
-
-    //     case 'hajj_agency':
-    //       if (controller.selectedAgency == null) return false;
-    //       return true;
-
-    //     default:
-    //       return false;
-    //   }
-    // }
-
     // --- Agency Dropdown ---
     Widget agencyDropdown() {
       if (controller.hajjAgencies.isEmpty) {
         return const CircularProgressIndicator();
       }
 
-      return DropdownButtonFormField<int>(
-        value: controller.selectedAgency != null
-            ? int.tryParse(controller.selectedAgency!['id'].toString())
-            : null,
-        hint: const Text(
-          "Select Agency",
-          style: TextStyle(color: textColorPrimary),
-        ),
-        isExpanded: true,
-        decoration: InputDecoration(
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        ),
-        items: controller.hajjAgencies.map((a) {
-          return DropdownMenuItem<int>(
-            value: int.tryParse(a['id'].toString()),
-            child: Text(a['name'] ?? ''),
-          );
-        }).toList(),
-        onChanged: (val) {
-          if (val == null) return;
-          final agency = controller.hajjAgencies
-              .firstWhere((a) => int.tryParse(a['id'].toString()) == val);
-          controller.setSelectedAgency(agency);
-        },
+      return DynamicDropdown<Map<String, dynamic>>(
+        label: "Select Agency",
+        items: controller.hajjAgencies,
+        selectedItem: controller.selectedAgency,
+        onChanged: (agency) => controller.setSelectedAgency(agency),
       );
     }
 
     // --- Bank Dropdown ---
     Widget bankDropdown() {
-      final isEnabled = controller.selectedAgency != null;
-
-      return DropdownButtonFormField<int>(
-        value: controller.selectedBankItem != null
-            ? controller.selectedBankItem!['id'] as int
-            : null,
-        hint: Text(
-          "Select Bank",
-          style: TextStyle(
-            color:
-                isEnabled ? textColorPrimary : Colors.grey, // grey if disabled
-          ),
-        ),
-        isExpanded: true,
-        decoration: InputDecoration(
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        ),
-        items: isEnabled
-            ? controller.bankList.map((b) {
-                return DropdownMenuItem<int>(
-                  value: b['id'] as int,
-                  child: Text(b['title'] ?? ''),
-                );
-              }).toList()
-            : [],
-        onChanged: isEnabled
-            ? (val) async {
-                if (val == null) return;
-                final bank =
-                    controller.bankList.firstWhere((b) => b['id'] == val);
-                await controller.setSelectedBank(bank);
-              }
-            : null,
+      return DynamicDropdown<Map<String, dynamic>>(
+        label: "Select Bank",
+        items: controller.bankList,
+        selectedItem: controller.selectedBankItem,
+        enabled: controller.selectedAgency != null,
+        onChanged: (bank) async => await controller.setSelectedBank(bank),
       );
     }
 
 // --- District Dropdown ---
     Widget districtDropdown() {
-      final isEnabled = controller.selectedBankItem != null;
-
-      return DropdownButtonFormField<int>(
-        initialValue: controller.selectedDistrictItem != null
-            ? controller.selectedDistrictItem!['id'] as int
-            : null,
-        hint: Text(
-          "Select District",
-          style: TextStyle(
-            color:
-                isEnabled ? textColorPrimary : Colors.grey, // grey if disabled
-          ),
-        ),
-        isExpanded: true,
-        decoration: InputDecoration(
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        ),
-        items: isEnabled
-            ? controller.districtList.map((d) {
-                return DropdownMenuItem<int>(
-                  value: d['id'] as int,
-                  child: Text(d['title'] ?? ''),
-                );
-              }).toList()
-            : [],
-        onChanged: isEnabled
-            ? (val) async {
-                if (val == null) return;
-                final district =
-                    controller.districtList.firstWhere((d) => d['id'] == val);
-                await controller.setSelectedDistrict(district);
-              }
-            : null,
+      return DynamicDropdown<Map<String, dynamic>>(
+        label: "Select District",
+        items: controller.districtList,
+        selectedItem: controller.selectedDistrictItem,
+        enabled: controller.selectedBankItem != null,
+        onChanged: (district) async =>
+            await controller.setSelectedDistrict(district),
       );
     }
 
 // --- Branch Dropdown ---
     Widget branchDropdown() {
-      final isEnabled = controller.selectedDistrictItem != null;
-
-      return DropdownButtonFormField<int>(
-        initialValue: controller.selectedBranchItem != null
-            ? controller.selectedBranchItem!['id'] as int
-            : null,
-        hint: Text(
-          "Select Branch",
-          style: TextStyle(
-            color:
-                isEnabled ? textColorPrimary : Colors.grey, // grey if disabled
-          ),
-        ),
-        isExpanded: true,
-        decoration: InputDecoration(
-          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-          contentPadding:
-              const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-        ),
-        items: isEnabled
-            ? controller.branchList.map((b) {
-                return DropdownMenuItem<int>(
-                  value: b['id'] as int,
-                  child: Text(b['title'] ?? ''),
-                );
-              }).toList()
-            : [],
-        onChanged: isEnabled
-            ? (val) {
-                if (val == null) return;
-                final branch =
-                    controller.branchList.firstWhere((b) => b['id'] == val);
-                controller.setSelectedBranch(branch);
-              }
-            : null,
+      return DynamicDropdown<Map<String, dynamic>>(
+        label: "Select Branch",
+        items: controller.branchList,
+        selectedItem: controller.selectedBranchItem,
+        enabled: controller.selectedDistrictItem != null,
+        onChanged: (branch) => controller.setSelectedBranch(branch),
       );
     }
 
