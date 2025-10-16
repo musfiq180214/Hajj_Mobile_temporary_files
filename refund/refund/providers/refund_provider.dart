@@ -1,0 +1,217 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:labbayk/core/network/api_client.dart';
+import 'package:labbayk/features/refund/data/refund_repository.dart';
+import 'package:labbayk/features/refund/domain/refund_model.dart';
+import 'package:flutter/foundation.dart';
+
+final refundRepoProvider = Provider<IRefundRepository>((ref) {
+  final apiClient = ref.watch(apiClientProvider);
+  return RefundRepository(apiClient);
+});
+
+final refundListProvider = FutureProvider<List<Map<String, dynamic>>>((ref) {
+  final repo = ref.watch(refundRepoProvider);
+  return repo.fetchRefundList();
+});
+
+final refundDetailProvider =
+    FutureProvider.family<Map<String, dynamic>?, int>((ref, id) {
+  final repo = ref.watch(refundRepoProvider);
+  return repo.fetchRefundDetail(id);
+});
+
+class RefundController extends ChangeNotifier {
+  final Ref ref;
+  final IRefundRepository repository;
+  final RefundModel model = RefundModel();
+
+  // selections & dropdowns
+  final Set<String> selectedTrackingNos = {};
+  String? initialTrackingNo;
+
+  List<Map<String, dynamic>> hajjAgencies = [];
+  List<Map<String, dynamic>> bankList = [];
+  List<Map<String, dynamic>> districtList = [];
+  List<Map<String, dynamic>> branchList = [];
+
+  Map<String, dynamic>? selectedAgency;
+  Map<String, dynamic>? selectedBankItem;
+  Map<String, dynamic>? selectedDistrictItem;
+  Map<String, dynamic>? selectedBranchItem;
+
+  RefundController(this.ref, this.repository);
+
+  Future<String> sendOtp(
+      String trackingNo, String phone, String forWhat) async {
+    final key = await repository.sendOtp(trackingNo, phone, forWhat);
+    model.requestKey = key;
+    model.otpSent = true;
+    notifyListeners();
+    return key;
+  }
+
+  Future<bool> verifyOtp(String otp) async {
+    final res = await repository.verifyOtp(model.requestKey, otp);
+    if (res.isNotEmpty) {
+      final pilgrimInfo = res['pilgrim_info'];
+      final groupPilgrimList = res['group_pilgrim_list'];
+
+      model.pilgrimData =
+          pilgrimInfo != null ? Map<String, dynamic>.from(pilgrimInfo) : null;
+
+      final groupId =
+          pilgrimInfo != null ? pilgrimInfo['group_payment_id'] : null;
+      model.groupPaymentReference = int.tryParse(groupId?.toString() ?? '');
+
+      model.groupPilgrims = groupPilgrimList is List
+          ? List<Map<String, dynamic>>.from(groupPilgrimList)
+          : [];
+
+      model.otpVerified = true;
+      notifyListeners();
+      return true;
+    }
+
+    model.otpVerified = false;
+    notifyListeners();
+    return false;
+  }
+
+  Future<bool> submitRefund(
+      {Map<String, dynamic>? paymentData, int? agencyId}) async {
+    if (model.requestKey.isEmpty) return false;
+    if (selectedTrackingNos.isEmpty) return false;
+    if (model.selectedMethod == null) return false;
+
+    final body = <String, dynamic>{
+      'request_key': model.requestKey,
+      'tracking_nos[]': selectedTrackingNos.toList(),
+      'agency_id': agencyId,
+      'payment_type': model.selectedMethod!,
+      if (paymentData != null) ...paymentData,
+    };
+
+    final result = await repository.submitRefund(body);
+    return result;
+  }
+
+  Future<void> loadHajjAgencies({String? keywords}) async {
+    hajjAgencies = await repository.fetchDropdown(
+      'agencies',
+      params: keywords != null ? {'keywords': keywords} : null,
+    );
+    notifyListeners();
+  }
+
+  Future<void> loadBanks({String? keywords}) async {
+    bankList = await repository.fetchDropdown(
+      'banks',
+      params: keywords != null ? {'keywords': keywords} : null,
+    );
+    notifyListeners();
+  }
+
+  Future<void> loadDistricts({String? keywords}) async {
+    if (selectedBankItem == null) return;
+    districtList = await repository.fetchDropdown(
+      'bank_districts',
+      params: {
+        'bank_id': selectedBankItem!['id'],
+        if (keywords != null) 'keywords': keywords,
+      },
+    );
+    notifyListeners();
+  }
+
+  Future<void> loadBranches({String? keywords}) async {
+    if (selectedBankItem == null || selectedDistrictItem == null) return;
+    branchList = await repository.fetchDropdown(
+      'bank_branches',
+      params: {
+        'bank_id': selectedBankItem!['id'],
+        'district_id': selectedDistrictItem!['id'],
+        if (keywords != null) 'keywords': keywords,
+      },
+    );
+    notifyListeners();
+  }
+
+  void togglePilgrimSelection(String trackingNo, bool isSelected) {
+    if (trackingNo == initialTrackingNo) return;
+    if (isSelected) {
+      selectedTrackingNos.add(trackingNo);
+    } else {
+      selectedTrackingNos.remove(trackingNo);
+    }
+    notifyListeners();
+  }
+
+  bool isPilgrimSelected(String trackingNo) {
+    return selectedTrackingNos.contains(trackingNo);
+  }
+
+  void setSelectedMethod(String? method) {
+    model.selectedMethod = method;
+    notifyListeners();
+  }
+
+  void setSelectedAgency(Map<String, dynamic>? agency) {
+    selectedAgency = agency;
+    notifyListeners();
+  }
+
+  Future<void> setSelectedBank(Map<String, dynamic>? bank) async {
+    if (selectedBankItem == bank) return;
+    selectedBankItem = bank;
+    selectedDistrictItem = null;
+    selectedBranchItem = null;
+    districtList = [];
+    branchList = [];
+    notifyListeners();
+    if (bank != null) {
+      await loadDistricts();
+    }
+  }
+
+  Future<void> setSelectedDistrict(Map<String, dynamic>? district) async {
+    if (selectedDistrictItem == district) return;
+    selectedDistrictItem = district;
+    selectedBranchItem = null;
+    branchList = [];
+    notifyListeners();
+    if (district != null) {
+      await loadBranches();
+    }
+  }
+
+  void setSelectedBranch(Map<String, dynamic>? branch) {
+    selectedBranchItem = branch;
+    notifyListeners();
+  }
+
+  void reset() {
+    model.selectedMethod = null;
+    model.otpSent = false;
+    model.otpVerified = false;
+    model.requestKey = "";
+    model.groupPaymentReference = null;
+    model.pilgrimData = null;
+    model.groupPilgrims.clear();
+
+    selectedTrackingNos.clear();
+    selectedBankItem = null;
+    selectedDistrictItem = null;
+    selectedBranchItem = null;
+    notifyListeners();
+  }
+
+  Future<List<Map<String, dynamic>>> fetchRefundList() async {
+    return await repository.fetchRefundList();
+  }
+}
+
+final refundControllerProvider =
+    ChangeNotifierProvider<RefundController>((ref) {
+  final repo = ref.watch(refundRepoProvider);
+  return RefundController(ref, repo);
+});
